@@ -37,7 +37,8 @@ def render_midi(midi_path: Path, wav_path: Path) -> Path:
         result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
     except OSError as error:
         raise AudioSetupError(f"Could not start FluidSynth: {error}") from error
-    if result.returncode != 0 or not wav_path.exists() or wav_path.stat().st_size < 44:
+    # A tiny WAV is FluidSynth's error placeholder, not playable music.
+    if result.returncode != 0 or not wav_path.exists() or wav_path.stat().st_size < 44100:
         detail = (result.stderr or result.stdout).strip()
         raise AudioSetupError(f"FluidSynth could not render the WAV. {detail}")
     return wav_path

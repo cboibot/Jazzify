@@ -103,12 +103,16 @@ def create_composition(settings: dict, output_dir: Path) -> Composition:
     chords = progression(settings["key"], settings["style"], profile, rng)
     sections, selected = _section_plan(bars), settings["instruments"]
     solo_mode = len(selected) == 1
-    lead = next((name for name in ("Saxophone","Trumpet","Guitar","Piano") if name in selected), "Saxophone")
+    melodic_instruments = [name for name in ("Saxophone","Trumpet","Guitar") if name in selected]
+    lead = melodic_instruments[0] if melodic_instruments else ("Piano" if "Piano" in selected else "Saxophone")
     lead_range = {"Piano":profile.piano_range,"Saxophone":profile.sax_range,"Trumpet":profile.trumpet_range,"Guitar":profile.guitar_range}[lead]
     shared_motif = motif_for(chords[0], minor_key, profile, rng, lead_range)
 
     tracks = 1 + len([name for name in selected if name != "Drums"])
-    midi = MIDIFile(tracks, adjust_origin=False, deinterleave=False)
+    # _add_events removes same-pitch overlaps, so MIDIUtil can safely order
+    # note-offs before later note-ons.  Its normal interleave pass also avoids
+    # malformed files when several melodic tracks overlap.
+    midi = MIDIFile(tracks, adjust_origin=False, deinterleave=True)
     midi.addTempo(0, 0, bpm)
     track, channel, end_time = 0, 0, bars * 4 - 2
 
@@ -137,7 +141,11 @@ def create_composition(settings: dict, output_dir: Path) -> Composition:
     for instrument in ("Saxophone","Trumpet","Guitar"):
         if instrument not in selected: continue
         midi.addProgramChange(track, channel, 0, PROGRAMS[instrument])
-        events = generate_melody(chords, minor_key, profile, rng, instrument, bars, sections, shared_motif, solo_mode=solo_mode)
+        role = "lead" if instrument == lead else "counter"
+        # Supporting melodic voices enter after the lead and use counter-lines;
+        # the rhythm section continues underneath both phrases.
+        overlap = 0.0 if role == "lead" else 1.25
+        events = generate_melody(chords, minor_key, profile, rng, instrument, bars, sections, shared_motif, solo_mode=solo_mode, entry_shift=overlap, role=role)
         if instrument == "Guitar" and solo_mode:
             events += _comp_events(chords, profile, rng, bars, sections, "Guitar", solo_mode=True)
         events += _ending(chords[-1], profile, instrument, end_time)

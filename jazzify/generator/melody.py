@@ -21,13 +21,21 @@ def motif_for(chord, minor_key, profile, rng, pitch_range):
     offsets = (0,.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6) if dense else (0,1.1,2.4,4.0,5.2)
     if profile.density < .45: offsets = (0,1.5,3.6,5.2)
     around = pitch_range[0] + int((pitch_range[1] - pitch_range[0]) * (.32 if profile.low_register_bias > .5 else .5))
+    scale = scale_for(chord, minor_key)
+    root_index = scale.index(chord.root) if chord.root in scale else 0
+    # These are scalar steps, not arbitrary semitone jumps.  The shape creates
+    # a small question followed by a recognizable answer.
+    contour = (0, 1, 2, 1, 0, -1, 0, 2, 1, 0, -1, 0, 0)
+    if profile.descending_bias > .5:
+        contour = (0, 1, 0, -1, -2, -1, -2, -3, -2, -3, -4, -3, -4)
     notes = []
     for index, offset in enumerate(offsets):
-        strong = offset % 2 < .12
-        pc = rng.choice(chord.tones if strong else scale_for(chord, minor_key))
-        direction = -1 if rng.random() < profile.descending_bias else 1
-        step = direction * rng.choice((0,1,2,3,5))
-        pitch = _nearest_pitch(pc, around + step, pitch_range)
+        if index == 0:
+            pc = chord.root
+        else:
+            decoration = rng.choice((-1, 0, 0, 0, 1)) if rng.random() < .22 else 0
+            pc = scale[(root_index + contour[index % len(contour)] + decoration) % len(scale)]
+        pitch = _nearest_pitch(pc, around, pitch_range)
         around = pitch
         duration = min(1.8, profile.note_length * (1.35 if index == len(offsets) - 1 else rng.choice((.7,1,1.15))))
         notes.append(MotifNote(offset, duration, pitch))
@@ -39,7 +47,12 @@ def _variant(motif, chord, profile, rng, pitch_range, kind):
     if root_shift > 6: root_shift -= 12
     result = []
     for index, note in enumerate(motif):
-        if kind == "B": shift = -root_shift if index % 2 else root_shift + rng.choice((-2,2))
+        if kind == "B":
+            # Inversion retains the motif's rhythm but turns its contour around.
+            inverted = motif[0].pitch - (note.pitch - motif[0].pitch)
+            pitch = max(pitch_range[0], min(pitch_range[1], inverted + root_shift))
+            result.append(MotifNote(note.offset + (.14 if index % 2 else 0), note.duration * .82, pitch))
+            continue
         elif kind == "A''": shift = root_shift + (-12 if profile.low_register_bias > .55 and index % 3 == 0 else 0)
         else: shift = root_shift
         if kind == "A'" and index == len(motif) - 1:
@@ -57,7 +70,7 @@ def section_gain(section):
     return {"INTRO":.62, "THEME":.80, "DEVELOPMENT":1.0, "SOLO":1.04, "RETURN":.84, "OUTRO":.55}[section]
 
 
-def generate_melody(chords, minor_key, profile, rng, instrument="Saxophone", bars=None, sections=None, motif=None, solo_mode=False, entry_shift=0.0):
+def generate_melody(chords, minor_key, profile, rng, instrument="Saxophone", bars=None, sections=None, motif=None, solo_mode=False, entry_shift=0.0, role="lead"):
     """Render one shared idea in deliberately separated two-bar phrases."""
     bars = bars or len(chords)
     ranges = {"Piano": profile.piano_range, "Saxophone": profile.sax_range, "Trumpet": profile.trumpet_range, "Guitar": profile.guitar_range}
@@ -72,16 +85,32 @@ def generate_melody(chords, minor_key, profile, rng, instrument="Saxophone", bar
         chance = 1.0 if solo_mode else profile.solo_activity
         if section in ("THEME", "RETURN"): chance = max(chance, .72)
         if rng.random() > chance: continue
+        # A supporting horn/guitar answers every other phrase instead of
+        # shadowing the lead in unison.
+        if role == "counter" and phrase_number % 2 == 0:
+            phrase_number += 1
+            continue
         kind = ("A", "A'", "B", "A''")[phrase_number % 4]
         idea = _variant(motif, chords[start_bar % len(chords)], profile, rng, pitch_range, kind)
         phrase_velocity = int(rng.randint(profile.velocity_low, profile.velocity_high) * section_gain(section))
-        for note in idea:
+        for index, note in enumerate(idea):
             absolute = start_bar * 4 + note.offset + entry_shift
             if absolute >= bars * 4: continue
             # Swing delays only offbeats; random variance stays small and phrase-aware.
             swing_delay = profile.swing * .16 if round(note.offset * 2) % 2 else 0
             timing = max(0, absolute + swing_delay + rng.uniform(-profile.humanize, profile.humanize))
             duration = max(.12, note.duration + rng.uniform(-profile.humanize, profile.humanize))
-            events.append((timing, duration, note.pitch, max(24, min(112, phrase_velocity + rng.randint(-7,7)))))
+            pitch = note.pitch
+            if role == "counter":
+                # Counter-lines live below the lead and use the current scale,
+                # creating overlap without a mechanical doubled melody.
+                scale = scale_for(chords[start_bar % len(chords)], minor_key)
+                pitch = _nearest_pitch(rng.choice(scale), note.pitch - rng.choice((3,4,7)), pitch_range)
+                duration *= .78
+                phrase_velocity = int(phrase_velocity * .78)
+            # A quiet chromatic approach gives phrase starts a played-in feel.
+            if index == 0 and profile.chromaticism > .30 and role == "lead" and timing > .18:
+                events.append((timing - .16, .12, max(pitch_range[0], pitch + rng.choice((-1,1))), max(22, phrase_velocity - 18)))
+            events.append((timing, duration, pitch, max(24, min(112, phrase_velocity + rng.randint(-7,7)))))
         phrase_number += 1
     return events
